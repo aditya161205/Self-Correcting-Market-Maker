@@ -39,20 +39,13 @@ In this project, SCMM augments that structure with two control signals:
 
 Formally,
 
-$$
-r_t^{SC} = r_t^{AS} + u_t^{\text{skew}}
-$$
+$$r_t^{SC} = r_t^{AS} + u_t^{\text{skew}}$$
 
-$$
-\delta_t^{SC} = \delta_t^{AS} + u_t^{\text{spr}}
-$$
+$$\delta_t^{SC} = \delta_t^{AS} + u_t^{\text{spr}}$$
 
 and the final bid and ask become
 
-$$
-p_t^b = r_t^{SC} - \delta_t^{SC}, \qquad
-p_t^a = r_t^{SC} + \delta_t^{SC}
-$$
+$$p_t^b = r_t^{SC} - \delta_t^{SC}, \qquad p_t^a = r_t^{SC} + \delta_t^{SC}$$
 
 This keeps the strong AS prior while allowing the controller to respond to:
 - inventory stress
@@ -72,20 +65,16 @@ So the main philosophy of the project is:
 The classical AS model uses:
 
 ### Reservation price
-$$
-r_t = S_t - q_t \gamma \sigma^2 (T-t)
-$$
+
+$$r_t = S_t - q_t \gamma \sigma^2 (T-t)$$
 
 ### Half-spread
-$$
-\delta_t^{AS} = \frac{1}{\gamma}\ln\left(1+\frac{\gamma}{k}\right) + \frac{1}{2}\gamma \sigma^2 (T-t)
-$$
+
+$$\delta_t^{AS} = \frac{1}{\gamma}\ln\left(1+\frac{\gamma}{k}\right) + \frac{1}{2}\gamma \sigma^2 (T-t)$$
 
 ### Quotes
-$$
-p_t^b = r_t - \delta_t^{AS}, \qquad
-p_t^a = r_t + \delta_t^{AS}
-$$
+
+$$p_t^b = r_t - \delta_t^{AS}, \qquad p_t^a = r_t + \delta_t^{AS}$$
 
 The project implements this baseline fully with:
 - Brownian mid-price simulation
@@ -112,6 +101,26 @@ Its main ingredients are:
 - realized-volatility-aware spread widening
 - time urgency near the end of the episode
 - gating so that correction is activated only when needed
+
+### Mathematical Formulation of SCMM-v4
+
+SCMM-v4 utilizes logical gates to ensure that corrections are only applied when specific risk thresholds are breached. Let the indicator functions for these gates be:
+
+$$I_q = \mathbb{1}(|q_t| \ge q_{\text{threshold}})$$
+
+$$I_f = \mathbb{1}(|\text{fill imbalance}_t| \ge \text{imbalance}_{\text{threshold}})$$
+
+$$I_d = \mathbb{1}(\text{drawdown}_t \ge \text{drawdown}_{\text{threshold}})$$
+
+The time urgency multiplier increases linearly as the episode nears its end:
+
+$$\tau_t = 1.0 + \eta_{\text{time}} \frac{t}{T}$$
+
+The final skew and spread corrections applied to the AS prior are calculated as:
+
+$$u_t^{\text{skew}} = I_q (-\alpha_q q_t \tau_t) + I_f (-\alpha_f \cdot \text{fill imbalance}_t)$$
+
+$$u_t^{\text{spr}} = \beta_q |q_t| + I_d (\beta_d \cdot \text{drawdown}_t) + \beta_\sigma \cdot \text{realized vol}_t$$
 
 The winning SCMM-v4 is therefore **not** the most aggressive model.  
 It is a **lightly corrective, selectively adaptive** controller.
@@ -395,6 +404,40 @@ RL-based SCMM variants were explored using:
 - Stable-Baselines3 PPO
 - direct AS + RL correction
 - SCMM-v4 + RL residual correction (SCMM-v5)
+
+### SCMM-v5 Mathematical Formulation
+SCMM-v5 is formulated as a residual correction algorithm layered on top of the SCMM-v4 prior. Instead of learning quotes entirely from scratch, the RL agent is tasked with learning continuous residual adjustments.
+
+**State Space (Observation)**
+The agent observes a 10-dimensional normalized state vector at each step:
+1. Normalized Inventory: $q_t / 10.0$
+2. Absolute Inventory: $|q_t| / 10.0$
+3. Time Remaining: $(T - t) / T$
+4. Drawdown: $\text{drawdown}_t / 10.0$
+5. Fill Imbalance: $\text{fill imbalance}_t / 20.0$
+6. Realized Volatility: $\text{realized vol}_t / 5.0$
+7. Market Regime: $regime_t \in \{0, 1\}$
+8. AS Half-Spread: $\delta_t^{AS} / 5.0$
+9. SCMM-v4 Skew Correction: $u_t^{\text{skew, v4}} / 1.0$
+10. SCMM-v4 Spread Correction: $u_t^{\text{spr, v4}} / 1.0$
+
+**Action Space**
+The policy outputs a continuous 2D action vector $a \in [-1, 1]^2$. These actions are scaled to generate the small residual corrections:
+
+$$du_t^{\text{skew}} = a_0 \cdot \text{residual skew max}$$
+
+$$du_t^{\text{spr}} = a_1 \cdot \text{residual spr max}$$
+
+The final applied corrections update the underlying v4 prior:
+
+$$u_t^{\text{skew}} = u_t^{\text{skew, v4}} + du_t^{\text{skew}}$$
+
+$$u_t^{\text{spr}} = u_t^{\text{spr, v4}} + du_t^{\text{spr}}$$
+
+**Reward Function**
+The reward mechanism balances the standard P&L generation objective against harsh penalties for holding excessive inventory, suffering drawdowns, and over-relying on the residual actions (which encourages preserving the safety of the SCMM-v4 rule-base unless absolutely necessary):
+
+$$R_t = \Delta \text{wealth}_t - \lambda_q q_t^2 - \lambda_d \cdot \text{drawdown}_t - \lambda_{\text{res}} \left( (du_t^{\text{skew}})^2 + (du_t^{\text{spr}})^2 \right)$$
 
 These RL variants did **not** outperform the best rule-based controller.
 
